@@ -1,0 +1,63 @@
+/*
+ * init.h
+ *
+ *  Created on: 2026年6月1日
+ *      Author: xz123
+ */
+
+#ifndef CODE_INIT_H_
+#define CODE_INIT_H_
+
+#include "zf_common_headfile.h"
+
+#define FUYA_PWM_PERCENT        50
+#define FUYA_PWM_DUTY           ((FUYA_PWM_PERCENT * PWM_DUTY_MAX) / 100)
+
+#define RUN_TIME                30
+
+// 路径表跑完后，检测到的路口数达到此值停车
+#define PARK_AFTER_PATH_NODES   2
+
+#define DEBUG_MODE              0
+
+#define WIRELESS_UART_ENABLE    ((DEBUG_MODE == 1) || (DEBUG_MODE / 10 == 1) || (DEBUG_MODE % 10 == 1))
+#define BLE6A20_ENABLE          ((DEBUG_MODE == 2) || (DEBUG_MODE / 10 == 2) || (DEBUG_MODE % 10 == 2))
+#define WIFI_SPI_ENABLE         ((DEBUG_MODE == 3) || (DEBUG_MODE / 10 == 3) || (DEBUG_MODE % 10 == 3))
+
+#define WIFI_SSID_TEST          "80"
+#define WIFI_PASSWORD_TEST      "8888888888"
+#define TCP_TARGET_IP           "192.168.43.144"
+#define TCP_TARGET_PORT         "8086"
+#define WIFI_LOCAL_PORT         "6666"
+
+#define KEY1                    (P20_6)
+#define KEY2                    (P20_7)
+#define KEY3                    (P11_2)
+#define KEY4                    (P11_3)
+
+#define BUZZER_PIN              (P33_10)
+
+#define FUYA_PWM                (ATOM1_CH0_P21_2)
+
+//#define MOTOR_DIR_L             (P11_9)
+//#define MOTOR_PWM_L             (ATOM3_CH5_P11_10)
+//#define MOTOR_DIR_R             (P11_11)
+//#define MOTOR_PWM_R             (ATOM2_CH7_P11_12)
+
+
+// ������Ŷ���
+#define MOTOR_DIR_L             (P11_12)    // ���ַ���
+#define MOTOR_PWM_L             (ATOM3_CH5_P11_10) // ����PWM
+#define MOTOR_DIR_R             (P11_11)    // ���ַ���
+#define MOTOR_PWM_R             (ATOM2_CH4_P11_9)  // ����PW
+
+#define ENCODER_L               (TIM4_ENCODER)
+#define ENCODER_PULSE_L         (TIM4_ENCODER_CH1_P02_8)
+#define ENCODER_DIR_L           (TIM4_ENCODER_CH2_P00_9)
+#define ENCODER_R               (TIM6_ENCODER)
+#define ENCODER_PULSE_R         (TIM6_ENCODER_CH1_P20_3)
+#define ENCODER_DIR_R           (TIM6_ENCODER_CH2_P20_0)
+
+void peripheral_init(void);
+
+#endif /* CODE_INIT_H_ */

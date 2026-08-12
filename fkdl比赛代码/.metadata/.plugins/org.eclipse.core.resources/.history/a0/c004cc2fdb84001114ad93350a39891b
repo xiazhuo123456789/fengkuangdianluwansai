@@ -1,0 +1,168 @@
+/*
+ * control.c
+ *
+ *  Created on: 2026骞�6鏈�1鏃�
+ *      Author: xz123
+ */
+
+#include "control.h"
+
+Steer_Pid steer_pid;
+
+void pid_param_init(void)
+{
+    steer_pid.kp  = 55;
+    steer_pid.gkd = 35;
+    steer_pid.kp2 = 0.005f;
+    steer_pid.kd  = 0.2f;
+}
+
+int base_speed = 1100;
+float l_speed_output = 0;
+float r_speed_output = 0;
+float steer_pwm_out = 0;
+volatile uint8 fuya_flag;
+
+static uint8 time_2ms;
+static uint8 time_5ms;
+
+void control_proc(void)
+{
+    int actual_speed;
+
+    if (run_flag == 1)
+    {
+        // ===== 鍚姩鍔犻�燂細鍏嬫湇姝诲尯鐢靛帇 =====
+#if BOOST_ENABLE
+        {
+            static uint32 boost_tick = 0;   // 鍚姩鏃跺埢(ms)
+            static uint8  boost_done = 0;   // 鍔犻�熸槸鍚︾粨鏉�
+
+            if (!boost_done)
+            {
+                if (boost_tick == 0)
+                {
+                    boost_tick = system_getval_ms(); // 璁板綍鍚姩鏃跺埢
+                }
+
+                uint32 elapsed = system_getval_ms() - boost_tick;
+                if (elapsed < BOOST_TIME_MS)
+                {
+                    actual_speed = BOOST_SPEED;       // 鍔犻�熸湡锛氶珮閫熷害
+                }
+                else
+                {
+                    actual_speed = base_speed;        // 鍔犻�熺粨鏉燂細闄嶅洖姝ｅ父閫熷害
+                    boost_done = 1;
+                }
+            }
+            else
+            {
+                actual_speed = base_speed;
+            }
+        }
+#else
+        actual_speed = base_speed;
+#endif
+
+        if(++time_2ms >= 2)
+        {
+            time_2ms = 0;
+
+            steer_pwm_out = steer_pid_calc(image_err, imu660rb_gyro_z, &steer_pid);
+            steer_pwm_out = limit_float(steer_pwm_out, steer_pwm_duty_max, steer_pwm_duty_min);
+        }
+
+        if(++time_5ms >= 5)
+        {
+            time_5ms = 0;
+
+            l_speed_output = actual_speed + steer_pwm_out;
+            r_speed_output = actual_speed - steer_pwm_out;
+
+            motor_proc(l_speed_output, r_speed_output);
+        }
+    }
+    else if(run_flag == 0)
+    {
+        motor_proc(0, 0);
+    }
+}
+
+void fuya_proc(void)
+{
+    if(fuya_flag)
+    {
+        set_fuya_pwm(FUYA_PWM_DUTY);
+    }
+    else
+    {
+        set_fuya_pwm(0);
+    }
+}
+
+void run_time_proc(void)
+{
+    static uint16 cnt_10ms = 0;
+    static uint16 timer_1s = 0;
+
+    if (start_flag)
+    {
+        cnt_10ms++;
+
+        if (cnt_10ms >= 100)
+        {
+            cnt_10ms = 0;
+            timer_1s++;
+
+            if(timer_1s == 1)
+            {
+                fuya_flag = 1;
+            }
+            else if(timer_1s == 2)
+            {
+                run_flag = 1;
+            }
+            else if(timer_1s == RUN_TIME)
+            {
+                run_flag = 0;
+            }
+            else if(timer_1s == (RUN_TIME + 1))
+            {
+                fuya_flag = 0;
+                start_flag = 0;
+
+                timer_1s = 0;
+                cnt_10ms = 0;
+            }
+        }
+    }
+
+    // 璺緞琛ㄨ窇瀹屽悗锛岀2涓矾鍙ｅ仠杞�
+    if (node_count >= path_len + PARK_AFTER_PATH_NODES)
+    {
+        run_flag = 0;
+    }
+
+    // 鍥惧儚鎸佺画鍏ㄩ粦 鈫� 璺戝嚭璧涢亾 鈫� 鍋滆溅
+    if (is_all_black())
+    {
+        run_flag = 0;
+    }
+}
+
+float steer_pid_calc(float image_error, float gyro, Steer_Pid *pid)
+{
+    float steer_value;
+    float error_diff = image_error - pid->last_error;  // 璇樊寰垎
+
+    // 澶栫幆锛氭瘮渚� + 闈炵嚎鎬у鐩� + 璇樊寰垎 - 闄�铻轰华寰垎
+    steer_value = (image_error * pid->kp)
+                + pid->kp2 * image_error * fabsf(image_error)  // 闈炵嚎鎬ч」
+                + pid->kd * error_diff                          // 璇樊寰垎椤�
+                - (gyro * pid->gkd) / 100;                      // 闄�铻轰华鎶戝埗
+
+    pid->last_error = image_error;
+
+    return steer_value;
+}

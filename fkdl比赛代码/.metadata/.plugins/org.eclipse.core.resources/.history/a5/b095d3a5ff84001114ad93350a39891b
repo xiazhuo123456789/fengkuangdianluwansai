@@ -1,0 +1,928 @@
+/*
+ * image.c
+ *
+ *  Created on: 2026年6月1日
+ *      Author: xz123
+ */
+
+#include "image.h"
+#include "menu.h"
+
+// ============ 路径规划 ============
+#define ARRAY_LEN(a)  ((uint8)(sizeof(a) / sizeof((a)[0])))
+
+// 路径表1
+static const TurnDir path1[] =
+{
+    TURN_RIGHT,
+    TURN_LEFT,
+    TURN_LEFT,
+    TURN_RIGHT,
+    GO_STRAIGHT,
+    TURN_LEFT,
+    TURN_LEFT,
+    TURN_LEFT,
+    TURN_RIGHT,
+    TURN_RIGHT,
+    TURN_RIGHT,
+    GO_STRAIGHT,
+    TURN_LEFT,
+    TURN_LEFT,
+    GO_STRAIGHT,
+    GO_STRAIGHT,
+    TURN_LEFT,
+    GO_STRAIGHT,
+    TURN_RIGHT,
+    GO_STRAIGHT,
+};
+
+// 路径表2
+static const TurnDir path2[] =
+{
+    TURN_RIGHT,
+    TURN_LEFT,
+    TURN_LEFT,
+    GO_STRAIGHT,
+    TURN_RIGHT,
+    GO_STRAIGHT,
+    GO_STRAIGHT,
+    TURN_RIGHT,
+    GO_STRAIGHT,
+    TURN_LEFT,
+    TURN_LEFT,
+    GO_STRAIGHT,
+    GO_STRAIGHT,
+    TURN_LEFT,
+    GO_STRAIGHT,
+    TURN_RIGHT,
+    GO_STRAIGHT,
+};
+
+// 路径表3
+static const TurnDir path3[] =
+{
+    TURN_RIGHT,
+    TURN_LEFT,
+    TURN_LEFT,
+    GO_STRAIGHT,
+    TURN_RIGHT,
+    GO_STRAIGHT,
+    GO_STRAIGHT,
+    TURN_RIGHT,
+    GO_STRAIGHT,
+    TURN_RIGHT,
+    TURN_LEFT,
+};
+
+// 路径表4
+static const TurnDir path4[] =
+{
+    GO_STRAIGHT,
+    GO_STRAIGHT,
+    GO_STRAIGHT,
+    GO_STRAIGHT,
+    GO_STRAIGHT,
+    GO_STRAIGHT,
+    GO_STRAIGHT,
+    GO_STRAIGHT,
+    GO_STRAIGHT,
+
+};
+
+// 路径表5（预留）
+static const TurnDir path5[] = {
+
+
+        GO_STRAIGHT,
+        GO_STRAIGHT,
+        GO_STRAIGHT,
+        GO_STRAIGHT,
+        GO_STRAIGHT,
+        GO_STRAIGHT,
+        GO_STRAIGHT,
+        GO_STRAIGHT,
+        GO_STRAIGHT,
+        GO_STRAIGHT,
+        GO_STRAIGHT,
+
+};
+// 路径表6（预留）
+static const TurnDir path6[] = { TURN_RIGHT };
+// 路径表7（预留）
+static const TurnDir path7[] = { TURN_RIGHT };
+
+// 所有路径表指针数组
+static const TurnDir *const all_paths[] = {
+    path1, path2, path3, path4, path5, path6, path7
+};
+
+// 各路径表长度
+static const uint8 all_paths_len[] = {
+    ARRAY_LEN(path1),
+    ARRAY_LEN(path2),
+    ARRAY_LEN(path3),
+    ARRAY_LEN(path4),
+    ARRAY_LEN(path5),
+    ARRAY_LEN(path6),
+    ARRAY_LEN(path7),
+};
+
+// 运行时当前路径表指针和长度
+const TurnDir *path = path1;
+uint8 path_len = 0;
+
+/**
+ * @brief 根据 path_select_idx 更新当前使用的路径表
+ */
+void path_update(void)
+{
+    uint8 idx = path_select_idx;
+    if (idx >= 7) idx = 0;
+    path = all_paths[idx];
+    path_len = all_paths_len[idx];
+}
+
+uint8 bin_image[ROW][COL];
+uint8 orig_image[ROW][COL];
+uint8 max_gray = 0;
+
+/**
+ * @brief 裁剪图像
+ */
+void image_crop(uint8 (*mt9v03x_image)[MT9V03X_1_W])
+{
+    for (uint8 row = 0; row < ROW; row++)
+    {
+        for (uint8 col = 0; col < COL; col++)
+        {
+            orig_image[row][col] = mt9v03x_image[row + CROP_Y][col + CROP_X];
+        }
+    }
+}
+
+/**
+ * @brief 分块大津法
+ */
+uint8 block_otsu(uint8 *image, uint16 col, uint16 row_start, uint16 row_end)
+{
+    uint32 histogram[256] = {0};
+    uint32 pixel_count = 0;
+    uint32 pixel_sum = 0;
+
+    for (uint16 row = row_start; row < row_end; row++)
+    {
+        for (uint16 col_idx = 0; col_idx < col; col_idx++)
+        {
+            uint8 gray = image[row * col + col_idx];
+            histogram[gray]++;
+            pixel_count++;
+            pixel_sum += gray;
+        }
+    }
+
+    uint8 min_gray = 0, max_gray = 255;
+    for (min_gray = 0; min_gray < 256 && histogram[min_gray] == 0; min_gray++)
+        ;
+    for (max_gray = 255; max_gray > min_gray && histogram[max_gray] == 0; max_gray--)
+        ;
+
+    if (max_gray == min_gray)
+        return max_gray;
+    if (min_gray + 1 == max_gray)
+        return min_gray;
+
+    float max_variance = 0.0f;
+    uint8 best_threshold = min_gray;
+
+    uint32 background_count = 0;
+    uint32 background_sum = 0;
+
+    for (uint8 threshold = min_gray; threshold < max_gray; threshold++)
+    {
+        background_count += histogram[threshold];
+        background_sum += histogram[threshold] * threshold;
+
+        uint32 foreground_count = pixel_count - background_count;
+        if (foreground_count == 0)
+            continue;
+
+        uint32 foreground_sum = pixel_sum - background_sum;
+
+        float background_mean = (float)background_sum / background_count;
+        float foreground_mean = (float)foreground_sum / foreground_count;
+
+        float variance = (float)background_count * foreground_count *
+                         (background_mean - foreground_mean) *
+                         (background_mean - foreground_mean);
+
+        if (variance > max_variance)
+        {
+            max_variance = variance;
+            best_threshold = threshold;
+        }
+    }
+
+    return best_threshold;
+}
+
+static uint8 thresh_update_cnt = 0;
+static uint8 thresh_far = 128;
+static uint8 thresh_mid = 128;
+static uint8 thresh_near = 128;
+
+/**
+ * @brief 图像二值化
+ */
+void image_binarize(uint8 (*src_image)[COL])
+{
+    if (++thresh_update_cnt >= 15)
+    {
+        thresh_update_cnt = 0;
+
+        thresh_far = block_otsu(src_image[0],  COL, BLOCK_FAR_START, BLOCK_FAR_END);
+        thresh_mid = block_otsu(src_image[0],  COL, BLOCK_MID_START, BLOCK_MID_END);
+        thresh_near = block_otsu(src_image[0], COL, BLOCK_NEAR_START, BLOCK_NEAR_END);
+
+        if (thresh_far < THRESH_MIN)
+            thresh_far = THRESH_MIN;
+        if (thresh_far > THRESH_MAX)
+            thresh_far = THRESH_MAX;
+        if (thresh_mid < THRESH_MIN)
+            thresh_mid = THRESH_MIN;
+        if (thresh_mid > THRESH_MAX)
+            thresh_mid = THRESH_MAX;
+        if (thresh_near < THRESH_MIN)
+            thresh_near = THRESH_MIN;
+        if (thresh_near > THRESH_MAX)
+            thresh_near = THRESH_MAX;
+    }
+
+    for (uint16 row = 0; row < ROW; row++)
+    {
+        uint8 threshold;
+
+        if (row < BLOCK_FAR_END)
+        {
+            threshold = thresh_far;
+        }
+        else if (row < BLOCK_MID_END)
+        {
+            threshold = thresh_mid;
+        }
+        else
+        {
+            threshold = thresh_near;
+        }
+
+        for (uint16 col = 0; col < COL; col++)
+        {
+            if (src_image[row][col] > threshold)
+            {
+                bin_image[row][col] = WHITE;
+            }
+            else
+            {
+                bin_image[row][col] = BLACK;
+            }
+        }
+    }
+}
+
+uint8 l_border[ROW];
+uint8 r_border[ROW];
+uint8 mid_line[ROW];
+
+/**
+ * @brief 扫线
+ */
+void search_line(void)
+{
+    uint8 l_find_flag, r_find_flag;
+
+    memset(l_border, 0, sizeof(l_border));
+    memset(r_border, COL - 1, sizeof(r_border));
+    memset(mid_line, COL / 2, sizeof(mid_line));
+
+    for (int16 row = ROW - 1; row >= 0; row--)
+    {
+        l_find_flag = 0;
+        r_find_flag = 0;
+
+        for (uint8 col = 0; col < COL - 2; col++)
+        {
+            if (bin_image[row][col] == BLACK && bin_image[row][col + 1] == WHITE)
+            {
+                l_find_flag = 1;
+                l_border[row] = col;
+                break;
+            }
+        }
+
+        if (!l_find_flag)
+        {
+            l_border[row] = 0;
+        }
+
+        for (uint8 col = COL - 1; col >= 2; col--)
+        {
+            if (bin_image[row][col] == BLACK && bin_image[row][col - 1] == WHITE)
+            {
+                r_find_flag = 1;
+                r_border[row] = col;
+                break;
+            }
+        }
+
+        if (!r_find_flag)
+        {
+            r_border[row] = COL - 1;
+        }
+
+        mid_line[row] = (l_border[row] + r_border[row]) / 2;
+    }
+}
+
+/**
+ * @brief 偏置数组
+ */
+void change_line(uint8 x1, uint8 y1, uint8 x2, uint8 y2)
+{
+    uint8 i, a1, a2, temp;
+    uint8 hx;
+
+    if (x1 > COL - 1)
+        x1 = COL - 1;
+    else if (x1 <= 0)
+        x1 = 0;
+    if (y1 > ROW - 1)
+        y1 = ROW - 1;
+    else if (y1 <= 0)
+        y1 = 0;
+    if (x2 > COL - 1)
+        x2 = COL - 1;
+    else if (x2 <= 0)
+        x2 = 0;
+    if (y2 > ROW - 1)
+        y2 = ROW - 1;
+    else if (y2 <= 0)
+        y2 = 0;
+
+    a1 = y1;
+    a2 = y2;
+
+    if (a1 > a2)
+    {
+        temp = a1;
+        a1 = a2;
+        a2 = temp;
+    }
+
+    for (i = a1; i <= a2; i++)
+    {
+        hx = (i - y1) * (x2 - x1) / (y2 - y1) + x1;
+        if (hx >= COL)
+            hx = COL - 1;
+        else if (hx <= 0)
+            hx = 0;
+        mid_line[i] = hx;
+        l_border[i] = hx;
+        r_border[i] = hx;
+    }
+}
+
+uint8 l_guaidian;
+uint8 r_guaidian;
+
+/**
+ * @brief 检测拐点
+ */
+void find_guaidian(uint8 start, uint8 end)
+{
+    uint8 i, t;
+    l_guaidian = 0;
+    r_guaidian = 0;
+
+    if (start < end)
+    {
+        t = start;
+        start = end;
+        end = t;
+    }
+
+    if (start >= ROW - 1 - 5)
+        start = ROW - 1 - 5;
+    if (end <= 5)
+        end = 5;
+
+    for (i = start; i >= end; i--)
+    {
+        if (l_guaidian == 0 &&
+            abs(l_border[i] - l_border[i - 5]) >= 50)
+        {
+            l_guaidian = i;
+        }
+
+        if (r_guaidian == 0 &&
+            abs(r_border[i] - r_border[i - 5]) >= 50)
+        {
+            r_guaidian = i;
+        }
+
+        if (l_guaidian != 0 && r_guaidian != 0)
+        {
+            break;
+        }
+    }
+}
+
+/**
+ * @brief 检测指定列赛道下边界
+ */
+uint8 find_line_bottom(uint8 col, uint8 (*bin_image)[COL])
+{
+    uint8 track_bottom = 0;
+
+    if (bin_image[ROW - 1][col] == WHITE && bin_image[ROW - 2][col] == WHITE)
+    {
+        return ROW - 1;
+    }
+
+    for (uint8 row = ROW - 1; row >= 2; row--)
+    {
+        if (bin_image[row][col] == BLACK &&
+            bin_image[row - 1][col] == WHITE &&
+            bin_image[row - 2][col] == WHITE)
+        {
+            track_bottom = row;
+            break;
+        }
+    }
+
+    return track_bottom;
+}
+
+/**
+ * @brief 统计矩形框赛道数量
+ */
+uint8 find_rect_path(uint8 (*bin_image)[COL])
+{
+    memset(&path_info, 0, sizeof(PathInfo));
+
+    for (uint8 col = RECT_LEFT; col < RECT_RIGHT - 2; col++)
+    {
+        if (bin_image[RECT_TOP][col] == BLACK &&
+            bin_image[RECT_TOP][col + 1] == WHITE &&
+            bin_image[RECT_TOP][col + 2] == WHITE)
+        {
+            path_info.top_exist = 1;
+            path_info.count++;
+            break;
+        }
+    }
+
+    for (uint8 col = RECT_LEFT; col < RECT_RIGHT - 2; col++)
+    {
+        if (bin_image[RECT_BOTTOM][col] == BLACK &&
+            bin_image[RECT_BOTTOM][col + 1] == WHITE &&
+            bin_image[RECT_BOTTOM][col + 2] == WHITE)
+        {
+            path_info.bottom_exist = 1;
+            path_info.count++;
+            break;
+        }
+    }
+
+    for (uint8 row = RECT_TOP; row < RECT_BOTTOM - 2; row++)
+    {
+        if (bin_image[row][RECT_LEFT] == BLACK &&
+            bin_image[row + 1][RECT_LEFT] == WHITE &&
+            bin_image[row + 2][RECT_LEFT] == WHITE)
+        {
+            path_info.left_exist = 1;
+            path_info.count++;
+            break;
+        }
+    }
+
+    for (uint8 row = RECT_TOP; row < RECT_BOTTOM - 2; row++)
+    {
+        if (bin_image[row][RECT_RIGHT] == BLACK &&
+            bin_image[row + 1][RECT_RIGHT] == WHITE &&
+            bin_image[row + 2][RECT_RIGHT] == WHITE)
+        {
+            path_info.right_exist = 1;
+            path_info.count++;
+            break;
+        }
+    }
+
+    return path_info.count;
+}
+
+/**
+ * @brief 绘制矩形
+ */
+void draw_rect(void)
+{
+    ips114_draw_line(RECT_LEFT, RECT_TOP, RECT_RIGHT, RECT_TOP, RGB565_RED);
+    ips114_draw_line(RECT_LEFT, RECT_TOP, RECT_LEFT, RECT_BOTTOM, RGB565_RED);
+    ips114_draw_line(RECT_RIGHT, RECT_TOP, RECT_RIGHT, RECT_BOTTOM, RGB565_RED);
+    ips114_draw_line(RECT_LEFT, RECT_BOTTOM, RECT_RIGHT, RECT_BOTTOM, RGB565_RED);
+}
+
+NodeState node_state = NODE_NONE;
+TurnDir turn_dir = TURN_NONE;
+PathInfo path_info = {0};
+uint8 node_count = 0;
+
+/**
+ * @brief 中线动态左偏
+ */
+static void bias_left(uint8 (*bin_image)[COL])
+{
+    uint8 guaidian_row = l_guaidian;
+
+    if (guaidian_row != 0)
+    {
+        change_line(0, guaidian_row, 0, 0);
+    }
+    else
+    {
+        uint8 tb = find_line_bottom(0, bin_image);
+
+        if (tb != 0)
+        {
+            change_line(0, tb, 0, 0);
+        }
+    }
+}
+
+/**
+ * @brief 中线动态右偏
+ */
+static void bias_right(uint8 (*bin_image)[COL])
+{
+    uint8 guaidian_row = r_guaidian;
+
+    if (guaidian_row != 0)
+    {
+        change_line(COL - 1, guaidian_row, COL - 1, 0);
+    }
+    else
+    {
+        uint8 tb = find_line_bottom(COL - 2, bin_image);
+
+        if (tb != 0)
+        {
+            change_line(COL - 1, tb, COL - 1, 0);
+        }
+    }
+}
+
+/**
+ * @brief 重置节点状态 转向完成后调用
+ */
+static void node_reset_state(uint8 *yaw_locked, uint8 *cur_paths)
+{
+    node_state = NODE_NONE;
+    turn_dir = TURN_NONE;
+    *yaw_locked = 0;
+    *cur_paths = 0;
+}
+
+/**
+ * @brief 根据路径规划和节点序号确定转向方向
+ */
+TurnDir plan_turn(void)
+{
+    uint8 index = node_count % path_len;
+    TurnDir planned = path[index];
+
+    plan_warn_flag = 0;
+
+    if (planned == TURN_LEFT && path_info.left_exist)
+        return TURN_LEFT;
+    if (planned == TURN_RIGHT && path_info.right_exist)
+        return TURN_RIGHT;
+    if (planned == GO_STRAIGHT && path_info.top_exist)
+        return GO_STRAIGHT;
+
+    plan_warn_flag = 1;
+    return planned;
+}
+
+/**
+ * @brief 在无路径规划下，根据延伸方向确定转向策略
+ */
+TurnDir corner_turn(void)
+{
+    if (path_info.bottom_exist && path_info.left_exist && !path_info.right_exist)
+        return TURN_LEFT;
+
+    if (path_info.bottom_exist && path_info.right_exist && !path_info.left_exist)
+        return TURN_RIGHT;
+
+    return TURN_NONE;
+}
+
+float std_yaw = 0.0f;
+float yaw_before_turn = 0.0f;
+float yaw_after_turn = 0.0f;
+TurnDir actual_turn_dir = TURN_NONE;
+uint8 turn_verify_flag = 0;
+uint8 plan_warn_flag = 0;
+
+/**
+ * @brief 节点处理
+ */
+void node_proc(uint8 (*bin_image)[COL])
+{
+    static float yaw_target = 0.0f;
+    static uint8 yaw_locked = 0;
+    static uint8 cur_paths = 0;
+    static uint32 enter_tick = 0;
+    static uint8  tick_locked = 0;
+
+    if (node_reset)
+    {
+        yaw_target = 0.0f;
+        yaw_locked = 0;
+        cur_paths = 0;
+        tick_locked = 0;
+        node_reset = 0;
+        return;
+    }
+
+    switch (node_state)
+    {
+        case NODE_NONE:
+            find_guaidian(ROW - 5, 40);
+
+            if (l_guaidian != 0 || r_guaidian != 0)
+            {
+                uint8 path_count = find_rect_path(bin_image);
+
+                if (path_count == 2)
+                {
+                    turn_dir = corner_turn();
+
+                    // 路径表跑完之后，直角也算路口
+                    if (turn_dir != TURN_NONE && node_count >= path_len)
+                    {
+                        node_count++;
+                    }
+                }
+                else if (path_count >= 3)
+                {
+                    turn_dir = plan_turn();
+                    node_count++;
+                }
+
+                if (turn_dir != TURN_NONE)
+                {
+                    cur_paths = path_count;
+                    node_state = NODE_DETECTED;
+                }
+            }
+            break;
+
+        case NODE_DETECTED:
+            if (!yaw_locked)
+            {
+                if (turn_dir == TURN_LEFT)
+                {
+                    std_yaw -= 90.0f;
+                    yaw_target = std_yaw;
+                }
+                else if (turn_dir == TURN_RIGHT)
+                {
+                    std_yaw += 90.0f;
+                    yaw_target = std_yaw;
+                }
+                else if (turn_dir == GO_STRAIGHT)
+                {
+                    yaw_target = std_yaw;
+                }
+                yaw_before_turn = yaw_total;
+                yaw_locked = 1;
+                node_state = NODE_TURNING;
+            }
+            break;
+
+        case NODE_TURNING:
+            find_guaidian(ROW - 5, 30);
+
+            if (turn_dir == GO_STRAIGHT)
+            {
+                if (!tick_locked)
+                {
+                    enter_tick = system_getval_ms();
+                    tick_locked = 1;
+                }
+
+                uint32 elapsed = system_getval_ms() - enter_tick;
+
+                if (elapsed > 10 && find_rect_path(bin_image) < 3)
+                {
+                    yaw_after_turn = yaw_total;
+                    float delta_yaw = yaw_after_turn - yaw_before_turn;
+                    if (delta_yaw < -30.0f)
+                        actual_turn_dir = TURN_LEFT;
+                    else if (delta_yaw > 30.0f)
+                        actual_turn_dir = TURN_RIGHT;
+                    else
+                        actual_turn_dir = GO_STRAIGHT;
+
+                    if (actual_turn_dir == turn_dir)
+                        turn_verify_flag = 1;
+                    else
+                        turn_verify_flag = 2;
+
+                    tick_locked = 0;
+                    node_reset_state(&yaw_locked, &cur_paths);
+                }
+            }
+            else if (turn_dir == TURN_LEFT)
+            {
+                bias_left(bin_image);
+
+                if (yaw_total <= yaw_target + 20.0f)
+                {
+                    yaw_after_turn = yaw_total;
+                    float delta_yaw = yaw_after_turn - yaw_before_turn;
+                    if (delta_yaw < -30.0f)
+                        actual_turn_dir = TURN_LEFT;
+                    else if (delta_yaw > 30.0f)
+                        actual_turn_dir = TURN_RIGHT;
+                    else
+                        actual_turn_dir = GO_STRAIGHT;
+
+                    if (actual_turn_dir == turn_dir)
+                        turn_verify_flag = 1;
+                    else
+                        turn_verify_flag = 2;
+
+                    node_reset_state(&yaw_locked, &cur_paths);
+                }
+            }
+            else if (turn_dir == TURN_RIGHT)
+            {
+                bias_right(bin_image);
+
+                if (yaw_total >= yaw_target - 20.0f)
+                {
+                    yaw_after_turn = yaw_total;
+                    float delta_yaw = yaw_after_turn - yaw_before_turn;
+                    if (delta_yaw < -30.0f)
+                        actual_turn_dir = TURN_LEFT;
+                    else if (delta_yaw > 30.0f)
+                        actual_turn_dir = TURN_RIGHT;
+                    else
+                        actual_turn_dir = GO_STRAIGHT;
+
+                    if (actual_turn_dir == turn_dir)
+                        turn_verify_flag = 1;
+                    else
+                        turn_verify_flag = 2;
+
+                    node_reset_state(&yaw_locked, &cur_paths);
+                }
+            }
+            break;
+
+        default:
+            break;
+    }
+}
+
+uint8 node_reset = 0;
+
+/**
+ * @brief 状态初始化
+ */
+void reset_all(void)
+{
+    memset(bin_image,  0, sizeof(bin_image));
+
+    memset(l_border, 0, sizeof(l_border));
+    memset(r_border, 0, sizeof(r_border));
+    memset(mid_line, 0, sizeof(mid_line));
+
+    l_guaidian = 0;
+    r_guaidian = 0;
+
+    node_state = NODE_NONE;
+    turn_dir = TURN_NONE;
+    memset(&path_info, 0, sizeof(PathInfo));
+    node_count = 0;
+
+    node_reset = 1;
+
+    image_err = 0.0f;
+
+    yaw_total = 0.0f;
+    std_yaw = 0.0f;
+
+    total_dist = 0.0f;
+
+    steer_pwm_out   = 0.0f;
+    l_speed_output  = 0.0f;
+    r_speed_output  = 0.0f;
+
+    yaw_before_turn = 0.0f;
+    yaw_after_turn = 0.0f;
+    actual_turn_dir = TURN_NONE;
+    turn_verify_flag = 0;
+    plan_warn_flag = 0;
+}
+
+float image_err = 0.0f;
+
+/**
+ * @brief 图像误差计算
+ */
+void calc_image_error(void)
+{
+    float err = 0;
+    float err_sum = 0;
+    static float err_last;
+
+    for (uint8 i = 15; i < ROW; i++)
+    {
+        err_sum += (mid_line[i] - 87);
+    }
+
+    err = err_sum / ROW;
+
+    if (err >= 55)
+        err = 55;
+    if (err <= -55)
+        err = -55;
+
+    image_err = err;
+}
+
+/**
+ * @brief 连续帧全黑检测，白像素 < 0.5% 且连续 30 帧才触发，跑白线赛道不会误停
+ * @return 1=连续全黑/跑出赛道, 0=正常
+ */
+uint8 is_all_black(void)
+{
+    static uint8 black_frame_cnt = 0;
+    uint32 white_count = 0;
+
+    for (uint16 row = 0; row < ROW; row++)
+    {
+        for (uint16 col = 0; col < COL; col++)
+        {
+            if (bin_image[row][col] == WHITE)
+            {
+                white_count++;
+            }
+        }
+    }
+
+    // 白像素低于 0.5% → 本帧全黑（正常赛道白线远不止112个像素）
+    if (white_count < (uint32)(ROW * COL * OUT_OF_TRACK_WHITE_RATIO))
+    {
+        black_frame_cnt++;
+    }
+    else
+    {
+        black_frame_cnt = 0;  // 出现白线就清零
+    }
+
+    // 连续全黑帧数超过阈值 → 跑出赛道，停车
+    if (black_frame_cnt >= OUT_OF_TRACK_FRAME_CNT)
+    {
+        black_frame_cnt = 0;
+        return 1;
+    }
+    return 0;
+}
+
+void image_proc(void)
+{
+    if (mt9v03x_finish_flag_1)
+    {
+        mt9v03x_finish_flag_1 = 0;
+        image_binarize(mt9v03x_image_1);
+        search_line();
+        node_proc(bin_image);
+        calc_image_error();
+        draw_rect();
+
+        // 统计原图最大灰度值（用于检查摄像头画面）
+        max_gray = 0;
+        for (uint16 r = 0; r < ROW; r++)
+        {
+            for (uint16 c = 0; c < COL; c++)
+            {
+                if (mt9v03x_image_1[r][c] > max_gray)
+                {
+                    max_gray = mt9v03x_image_1[r][c];
+                }
+            }
+        }
+    }
+}

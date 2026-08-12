@@ -1,0 +1,914 @@
+/*
+ * image.c
+ *
+ *  Created on: 2026年6月1日
+ *      Author: xz123
+ */
+
+#include "image.h"
+
+// ============ 璺緞瑙勫垝 ============
+#define ARRAY_LEN(a)  ((uint8)(sizeof(a) / sizeof((a)[0])))
+
+const TurnDir path[] =
+{
+#if   PATH_SELECT == 1      // 鍒濊禌璺嚎1
+               TURN_RIGHT,
+               TURN_LEFT,
+               TURN_LEFT,
+               TURN_RIGHT,
+               GO_STRAIGHT,
+               TURN_LEFT,
+               TURN_LEFT,
+               TURN_LEFT,
+               TURN_RIGHT,
+               TURN_RIGHT,
+               TURN_RIGHT,
+               GO_STRAIGHT,
+               TURN_LEFT,
+               TURN_LEFT,
+               GO_STRAIGHT,
+               GO_STRAIGHT,
+               TURN_LEFT,
+               GO_STRAIGHT,
+               TURN_RIGHT,
+               GO_STRAIGHT,
+
+#elif PATH_SELECT == 2      // 鍒濊禌璺嚎2
+                   TURN_RIGHT,
+                   TURN_LEFT,
+                   TURN_LEFT,
+                   GO_STRAIGHT,
+                   TURN_RIGHT,
+                   GO_STRAIGHT,
+                   GO_STRAIGHT,
+                   TURN_RIGHT,
+                   GO_STRAIGHT,
+                   TURN_LEFT,
+                   TURN_LEFT,
+                   GO_STRAIGHT,
+                   GO_STRAIGHT,
+                   TURN_LEFT,
+                   GO_STRAIGHT,
+                   TURN_RIGHT,
+                   GO_STRAIGHT,
+
+#elif PATH_SELECT == 3      // 鍒濊禌璺嚎3
+        TURN_RIGHT,
+        TURN_LEFT,
+        TURN_LEFT,
+        GO_STRAIGHT,
+        TURN_RIGHT,
+        GO_STRAIGHT,
+        GO_STRAIGHT,
+        TURN_RIGHT,
+        GO_STRAIGHT,
+        TURN_RIGHT,
+        TURN_LEFT,
+
+#elif PATH_SELECT == 4      // 鍐宠禌璺嚎1
+          GO_STRAIGHT,
+          GO_STRAIGHT,
+          GO_STRAIGHT,
+          GO_STRAIGHT,
+          GO_STRAIGHT,
+          GO_STRAIGHT,
+          GO_STRAIGHT,
+          GO_STRAIGHT,
+          GO_STRAIGHT,
+
+#elif PATH_SELECT == 5      // 鍐宠禌璺嚎2
+
+#elif PATH_SELECT == 6      // 鍐宠禌璺嚎3
+
+#elif PATH_SELECT == 7      // 澶囩敤璺嚎
+
+
+#endif
+};
+
+uint8 bin_image[ROW][COL];
+uint8 orig_image[ROW][COL];
+
+/**
+ * @brief 瑁佸壀鍥惧儚
+ */
+void image_crop(uint8 (*mt9v03x_image)[MT9V03X_1_W])
+{
+    for (uint8 row = 0; row < ROW; row++)
+    {
+        for (uint8 col = 0; col < COL; col++)
+        {
+            orig_image[row][col] = mt9v03x_image[row + CROP_Y][col + CROP_X];
+        }
+    }
+}
+
+/**
+ * @brief 鍒嗗潡澶ф触娉�
+ */
+uint8 block_otsu(uint8 *image, uint16 col, uint16 row_start, uint16 row_end)
+{
+    uint32 histogram[256] = {0}; // 鐏板害鐩存柟鍥�
+    uint32 pixel_count = 0;      // 鍍忕礌鎬绘暟
+    uint32 pixel_sum = 0;        // 鐏板害鎬诲拰
+
+    // 缁熻鐏板害鐩存柟鍥�
+    for (uint16 row = row_start; row < row_end; row++)
+    {
+        for (uint16 col_idx = 0; col_idx < col; col_idx++)
+        {
+            uint8 gray = image[row * col + col_idx];
+            histogram[gray]++;
+            pixel_count++;
+            pixel_sum += gray;
+        }
+    }
+
+    // 鎵惧埌鏈夋晥鐏板害鑼冨洿
+    uint8 min_gray = 0, max_gray = 255;
+    for (min_gray = 0; min_gray < 256 && histogram[min_gray] == 0; min_gray++)
+        ;
+    for (max_gray = 255; max_gray > min_gray && histogram[max_gray] == 0; max_gray--)
+        ;
+
+    // 杈圭晫鎯呭喌澶勭悊
+    if (max_gray == min_gray)
+        return max_gray;
+    if (min_gray + 1 == max_gray)
+        return min_gray;
+
+    // 璁＄畻鏈�浣抽槇鍊�
+    float max_variance = 0.0f;
+    uint8 best_threshold = min_gray;
+
+    uint32 background_count = 0;
+    uint32 background_sum = 0;
+
+    for (uint8 threshold = min_gray; threshold < max_gray; threshold++)
+    {
+        // 绱鑳屾櫙鍍忕礌
+        background_count += histogram[threshold];
+        background_sum += histogram[threshold] * threshold;
+
+        // 璁＄畻鍓嶆櫙鍍忕礌
+        uint32 foreground_count = pixel_count - background_count;
+        if (foreground_count == 0)
+            continue;
+
+        uint32 foreground_sum = pixel_sum - background_sum;
+
+        // 璁＄畻鑳屾櫙鍜屽墠鏅殑骞冲潎鐏板害
+        float background_mean = (float)background_sum / background_count;
+        float foreground_mean = (float)foreground_sum / foreground_count;
+
+        // 璁＄畻绫婚棿鏂瑰樊
+        float variance = (float)background_count * foreground_count *
+                         (background_mean - foreground_mean) *
+                         (background_mean - foreground_mean);
+
+        // 璁板綍鏈�澶ф柟宸搴旂殑闃堝��
+        if (variance > max_variance)
+        {
+            max_variance = variance;
+            best_threshold = threshold;
+        }
+    }
+
+    return best_threshold;
+}
+
+static uint8 thresh_update_cnt = 0;
+static uint8 thresh_far = 128;
+static uint8 thresh_mid = 128;
+static uint8 thresh_near = 128;
+
+/**
+ * @brief 鍥惧儚浜屽�煎寲
+ */
+void image_binarize(uint8 (*src_image)[COL])
+{
+    // 姣�20甯ф洿鏂颁竴娆￠槇鍊�
+    if (++thresh_update_cnt >= 15)
+    {
+        thresh_update_cnt = 0;
+
+        // 鍒嗗潡璁＄畻闃堝��
+        thresh_far = block_otsu(src_image[0],  COL, BLOCK_FAR_START, BLOCK_FAR_END);
+        thresh_mid = block_otsu(src_image[0],  COL, BLOCK_MID_START, BLOCK_MID_END);
+        thresh_near = block_otsu(src_image[0], COL, BLOCK_NEAR_START, BLOCK_NEAR_END);
+
+        // 闃堝�奸檺骞�
+        if (thresh_far < THRESH_MIN)
+            thresh_far = THRESH_MIN;
+        if (thresh_far > THRESH_MAX)
+            thresh_far = THRESH_MAX;
+        if (thresh_mid < THRESH_MIN)
+            thresh_mid = THRESH_MIN;
+        if (thresh_mid > THRESH_MAX)
+            thresh_mid = THRESH_MAX;
+        if (thresh_near < THRESH_MIN)
+            thresh_near = THRESH_MIN;
+        if (thresh_near > THRESH_MAX)
+            thresh_near = THRESH_MAX;
+    }
+
+    // 鍒嗗潡浜屽�煎寲
+    for (uint16 row = 0; row < ROW; row++)
+    {
+        uint8 threshold;
+
+        // 鏍规嵁琛屾暟閫夋嫨闃堝��
+        if (row < BLOCK_FAR_END)
+        {
+            threshold = thresh_far;
+        }
+        else if (row < BLOCK_MID_END)
+        {
+            threshold = thresh_mid;
+        }
+        else
+        {
+            threshold = thresh_near;
+        }
+
+        // 浜屽�煎寲澶勭悊
+        for (uint16 col = 0; col < COL; col++)
+        {
+            if (src_image[row][col] > threshold)
+            {
+                bin_image[row][col] = WHITE;
+            }
+            else
+            {
+                bin_image[row][col] = BLACK;
+            }
+        }
+    }
+}
+
+uint8 l_border[ROW];
+uint8 r_border[ROW];
+uint8 mid_line[ROW];
+
+/**
+ * @brief 鎵嚎
+ */
+void search_line(void)
+{
+    uint8 l_find_flag, r_find_flag;
+
+    // 鍒濆鍖栬竟绾挎暟缁�
+    memset(l_border, 0, sizeof(l_border));
+    memset(r_border, COL - 1, sizeof(r_border));
+    memset(mid_line, COL / 2, sizeof(mid_line));
+
+    for (int16 row = ROW - 1; row >= 0; row--)
+    {
+        l_find_flag = 0;
+        r_find_flag = 0;
+
+        // 宸﹁竟绾挎悳绱細浠庡乏鍚戝彸鎵鹃粦-鐧借烦鍙�
+        for (uint8 col = 0; col < COL - 2; col++)
+        {
+            if (bin_image[row][col] == BLACK && bin_image[row][col + 1] == WHITE)
+            {
+                l_find_flag = 1;
+                l_border[row] = col;
+                break;
+            }
+        }
+
+        // 濡傛灉娌℃湁鎵惧埌宸﹁竟鐣岋紝鍒欏皢宸﹁竟鐣岀疆涓�0
+        if (!l_find_flag)
+        {
+            l_border[row] = 0;
+        }
+
+        // 鍙宠竟绾挎悳绱細浠庡彸鍚戝乏鎵鹃粦-鐧借烦鍙�
+        for (uint8 col = COL - 1; col >= 2; col--)
+        {
+            if (bin_image[row][col] == BLACK && bin_image[row][col - 1] == WHITE)
+            {
+                r_find_flag = 1;
+                r_border[row] = col;
+                break;
+            }
+        }
+
+        // 濡傛灉娌℃湁鎵惧埌鍙宠竟鐣岋紝鍒欏皢鍙宠竟鐣岀疆涓� COL - 1
+        if (!r_find_flag)
+        {
+            r_border[row] = COL - 1;
+        }
+
+        // 璁＄畻涓嚎
+        mid_line[row] = (l_border[row] + r_border[row]) / 2;
+    }
+}
+
+/**
+ * @brief 鍋忕疆鏁扮粍
+ */
+void change_line(uint8 x1, uint8 y1, uint8 x2, uint8 y2)
+{
+    uint8 i, a1, a2, temp;
+    uint8 hx;
+
+    if (x1 > COL - 1)
+        x1 = COL - 1;
+    else if (x1 <= 0)
+        x1 = 0;
+    if (y1 > ROW - 1)
+        y1 = ROW - 1;
+    else if (y1 <= 0)
+        y1 = 0;
+    if (x2 > COL - 1)
+        x2 = COL - 1;
+    else if (x2 <= 0)
+        x2 = 0;
+    if (y2 > ROW - 1)
+        y2 = ROW - 1;
+    else if (y2 <= 0)
+        y2 = 0;
+
+    a1 = y1;
+    a2 = y2;
+
+    if (a1 > a2)
+    {
+        temp = a1;
+        a1 = a2;
+        a2 = temp;
+    }
+
+    for (i = a1; i <= a2; i++)
+    {
+        hx = (i - y1) * (x2 - x1) / (y2 - y1) + x1;
+        if (hx >= COL)
+            hx = COL - 1;
+        else if (hx <= 0)
+            hx = 0;
+        mid_line[i] = hx;
+        l_border[i] = hx;
+        r_border[i] = hx;
+    }
+}
+
+uint8 l_guaidian;
+uint8 r_guaidian;
+
+/**
+ * @brief 妫�娴嬫嫄鐐�
+ */
+void find_guaidian(uint8 start, uint8 end)
+{
+    uint8 i, t;
+    l_guaidian = 0;
+    r_guaidian = 0;
+
+    if (start < end)
+    {
+        t = start;
+        start = end;
+        end = t;
+    }
+
+    if (start >= ROW - 1 - 5)
+        start = ROW - 1 - 5;
+    if (end <= 5)
+        end = 5;
+
+    for (i = start; i >= end; i--)
+    {
+        // 妫�娴嬪乏瑙掔偣
+        if (l_guaidian == 0 && // 鍙壘绗竴涓鍚堟潯浠剁殑鐐�
+            abs(l_border[i] - l_border[i - 5]) >= 50)
+        {
+            l_guaidian = i;
+        }
+
+        // 妫�娴嬪彸瑙掔偣
+        if (r_guaidian == 0 && // 鍙壘绗竴涓鍚堟潯浠剁殑鐐�
+            abs(r_border[i] - r_border[i - 5]) >= 50)
+        {
+            r_guaidian = i;
+        }
+
+        if (l_guaidian != 0 && r_guaidian != 0)
+        {
+            break;
+        }
+    }
+}
+
+/**
+ * @brief 妫�娴嬫寚瀹氬垪璧涢亾涓嬭竟鐣�
+ */
+uint8 find_line_bottom(uint8 col, uint8 (*bin_image)[COL])
+{
+    uint8 track_bottom = 0;
+
+    // 濡傛灉鏈�搴曢儴宸茬粡鏄櫧鑹诧紝鐩存帴杩斿洖 ROW-1
+    if (bin_image[ROW - 1][col] == WHITE && bin_image[ROW - 2][col] == WHITE)
+    {
+        return ROW - 1;
+    }
+
+    // 浠庝笅寰�涓婃壂鎻忥紙浠� ROW-1 鍒� 2锛�
+    for (uint8 row = ROW - 1; row >= 2; row--)
+    {
+        // 妫�娴嬭禌閬撲笅杈圭晫锛堣繘鍏ヨ禌閬擄級锛氶粦鈫掔櫧鈫掔櫧
+        if (bin_image[row][col] == BLACK &&
+            bin_image[row - 1][col] == WHITE &&
+            bin_image[row - 2][col] == WHITE)
+        {
+            track_bottom = row;  // 杩斿洖涓嬭竟鐣屼綅缃�
+            break;
+        }
+    }
+
+    return track_bottom;
+}
+
+/**
+ * @brief 缁熻鐭╁舰妗嗚禌閬撴暟閲�
+ */
+uint8 find_rect_path(uint8 (*bin_image)[COL])
+{
+    // 娓呯┖璺緞淇℃伅
+    memset(&path_info, 0, sizeof(PathInfo));
+
+    // 妫�娴嬩笂杈癸紙row=9锛宑ol浠�14鍒�79锛�
+    for (uint8 col = RECT_LEFT; col < RECT_RIGHT - 2; col++)
+    {
+        // 榛�-鐧�-鐧借烦鍙橈紝璇存槑鏈夌櫧绾�
+        if (bin_image[RECT_TOP][col] == BLACK &&
+            bin_image[RECT_TOP][col + 1] == WHITE &&
+            bin_image[RECT_TOP][col + 2] == WHITE)
+        {
+            path_info.top_exist = 1;
+            path_info.count++;
+            break; // 鎵惧埌涓�鏉″氨澶熶簡
+        }
+    }
+
+    // 妫�娴嬩笅杈癸紙row=50锛宑ol浠�14鍒�79锛�
+    for (uint8 col = RECT_LEFT; col < RECT_RIGHT - 2; col++)
+    {
+        if (bin_image[RECT_BOTTOM][col] == BLACK &&
+            bin_image[RECT_BOTTOM][col + 1] == WHITE &&
+            bin_image[RECT_BOTTOM][col + 2] == WHITE)
+        {
+            path_info.bottom_exist = 1;
+            path_info.count++;
+            break;
+        }
+    }
+
+    // 妫�娴嬪乏杈癸紙col=14锛宺ow浠�9鍒�50锛�
+    for (uint8 row = RECT_TOP; row < RECT_BOTTOM - 2; row++)
+    {
+        if (bin_image[row][RECT_LEFT] == BLACK &&
+            bin_image[row + 1][RECT_LEFT] == WHITE &&
+            bin_image[row + 2][RECT_LEFT] == WHITE)
+        {
+            path_info.left_exist = 1;
+            path_info.count++;
+            break;
+        }
+    }
+
+    // 妫�娴嬪彸杈癸紙col=79锛宺ow浠�9鍒�50锛�
+    for (uint8 row = RECT_TOP; row < RECT_BOTTOM - 2; row++)
+    {
+        if (bin_image[row][RECT_RIGHT] == BLACK &&
+            bin_image[row + 1][RECT_RIGHT] == WHITE &&
+            bin_image[row + 2][RECT_RIGHT] == WHITE)
+        {
+            path_info.right_exist = 1;
+            path_info.count++;
+            break;
+        }
+    }
+
+    return path_info.count;
+}
+
+/**
+ * @brief 缁樺埗鐭╁舰
+ */
+void draw_rect(void)
+{
+    // 缁樺埗鍥哄畾鐭╁舰妗�
+    ips114_draw_line(RECT_LEFT, RECT_TOP, RECT_RIGHT, RECT_TOP, RGB565_RED);        // 涓婅竟
+    ips114_draw_line(RECT_LEFT, RECT_TOP, RECT_LEFT, RECT_BOTTOM, RGB565_RED);      // 宸﹁竟
+    ips114_draw_line(RECT_RIGHT, RECT_TOP, RECT_RIGHT, RECT_BOTTOM, RGB565_RED);    // 鍙宠竟
+    ips114_draw_line(RECT_LEFT, RECT_BOTTOM, RECT_RIGHT, RECT_BOTTOM, RGB565_RED);  // 涓嬭竟
+}
+
+NodeState node_state = NODE_NONE;
+TurnDir turn_dir = TURN_NONE;
+PathInfo path_info = {0};
+uint8 node_count = 0;
+
+/**
+ * @brief 涓嚎鍔ㄦ�佸乏鍋�
+ */
+static void bias_left(uint8 (*bin_image)[COL])
+{
+    uint8 guaidian_row = l_guaidian;
+
+    if (guaidian_row != 0)
+    {
+        // 鎷愮偣瀛樺湪锛氭嫄鐐逛笂鏂瑰亸缃埌鍒�0 涓嬫柟淇濈暀鍘熷涓嚎
+        change_line(0, guaidian_row, 0, 0);
+    }
+    else
+    {
+        // 鎷愮偣娑堝け锛氱敤宸︿晶璧涢亾涓嬭竟鐣屾浛浠ｆ嫄鐐�
+        uint8 tb = find_line_bottom(0, bin_image);
+
+        if (tb != 0)
+        {
+            // 涓嬭竟鐣屼笂鏂瑰亸缃埌鍒�0 涓嬫柟淇濈暀鍘熷涓嚎
+            change_line(0, tb, 0, 0);
+        }
+    }
+}
+
+/**
+ * @brief 涓嚎鍔ㄦ�佸彸鍋�
+ */
+static void bias_right(uint8 (*bin_image)[COL])
+{
+    uint8 guaidian_row = r_guaidian;
+
+    if (guaidian_row != 0)
+    {
+        change_line(COL - 1, guaidian_row, COL - 1, 0);
+    }
+    else
+    {
+        uint8 tb = find_line_bottom(COL - 2, bin_image);
+
+        if (tb != 0)
+        {
+            change_line(COL - 1, tb, COL - 1, 0);
+        }
+    }
+}
+
+/**
+ * @brief 閲嶇疆鑺傜偣鐘舵�� 杞悜瀹屾垚鍚庤皟鐢�
+ */
+static void node_reset_state(uint8 *yaw_locked, uint8 *cur_paths)
+{
+    node_state = NODE_NONE;
+    turn_dir = TURN_NONE;
+    *yaw_locked = 0;
+    *cur_paths = 0;
+}
+
+const uint8 path_len = ARRAY_LEN(path);
+
+/**
+ * @brief 鏍规嵁璺緞瑙勫垝鍜岃妭鐐瑰簭鍙风‘瀹氳浆鍚戞柟鍚�
+ */
+TurnDir plan_turn(void)
+{
+    uint8 index = node_count % path_len;
+    TurnDir planned = path[index];
+
+    plan_warn_flag = 0; // 榛樿鏃犺鍛�
+
+    // 楠岃瘉璺緞鏄惁瀛樺湪
+    if (planned == TURN_LEFT && path_info.left_exist)
+        return TURN_LEFT;
+    if (planned == TURN_RIGHT && path_info.right_exist)
+        return TURN_RIGHT;
+    if (planned == GO_STRAIGHT && path_info.top_exist)
+        return GO_STRAIGHT;
+
+    // 鑻ヨ繍琛屽埌杩欓噷璇存槑锛氳鍒掔殑鏂瑰悜鍦ㄥ浘鍍忎腑娌℃湁妫�娴嬪埌瀵瑰簲鐨勮矾
+    plan_warn_flag = 1; // 鏍囪璀﹀憡
+    return planned;
+}
+
+/**
+ * @brief 鍦ㄦ棤璺緞瑙勫垝涓嬶紝鏍规嵁寤朵几鏂瑰悜纭畾杞悜绛栫暐
+ */
+TurnDir corner_turn(void)
+{
+    // 涓嬫柟 + 宸﹁竟鏈夎矾 鈫� 宸﹁浆
+    if (path_info.bottom_exist && path_info.left_exist && !path_info.right_exist)
+        return TURN_LEFT;
+
+    // 涓嬫柟 + 鍙宠竟鏈夎矾 鈫� 鍙宠浆
+    if (path_info.bottom_exist && path_info.right_exist && !path_info.left_exist)
+        return TURN_RIGHT;
+
+    return TURN_NONE;
+}
+
+float std_yaw = 0.0f;
+float yaw_before_turn = 0.0f;           // 杞悜寮�濮嬪墠鐨勫亸鑸
+float yaw_after_turn = 0.0f;            // 杞悜瀹屾垚鍚庣殑鍋忚埅瑙�
+TurnDir actual_turn_dir = TURN_NONE;    // 瀹為檯杞悜鏂瑰悜
+uint8 turn_verify_flag = 0;             // 杞悜鏍￠獙缁撴灉锛�0=鏈牎楠�, 1=鍖归厤, 2=涓嶅尮閰�
+uint8 plan_warn_flag = 0;               // 璺緞瑙勫垝楠岃瘉璀﹀憡鏍囧織
+
+/**
+ * @brief 鑺傜偣澶勭悊
+ */
+void node_proc(uint8 (*bin_image)[COL])
+{
+    static float yaw_target = 0.0f;     // 杞悜鐩爣鍋忚埅瑙�
+    static uint8 yaw_locked = 0;        // 鍋忚埅瑙掗攣瀹氭爣蹇�
+    static uint8 cur_paths = 0;         // 褰撳墠鑺傜偣璺緞鏁伴噺
+    static uint32 enter_tick = 0;       // 鐩磋杩涘叆鏃跺埢(ms)
+    static uint8  tick_locked = 0;      // 鐩磋璁℃椂閿佸畾鏍囧織
+
+    if (node_reset)
+    {
+        yaw_target = 0.0f;
+        yaw_locked = 0;
+        cur_paths = 0;
+        tick_locked = 0;
+        node_reset = 0;
+        return;
+    }
+
+    switch (node_state)
+    {
+        case NODE_NONE:
+            find_guaidian(ROW - 5, 40);
+
+            // 濡傛灉妫�娴嬪埌鎷愮偣
+            if (l_guaidian != 0 || r_guaidian != 0)
+            {
+                uint8 path_count = find_rect_path(bin_image);
+
+                // 褰撳墠涓虹洿瑙�
+                if (path_count == 2)
+                {
+                    turn_dir = corner_turn();
+
+                    // 路径表跑完之后，直角也算路口
+                    if (turn_dir != TURN_NONE && node_count >= path_len)
+                    {
+                        node_count++;
+                    }
+                }
+                // 褰撳墠涓篢瀛楁垨鍗佸瓧璺彛
+                else if (path_count >= 3)
+                {
+                    turn_dir = plan_turn();
+                    node_count++;
+                }
+
+                if (turn_dir != TURN_NONE)
+                {
+                    cur_paths = path_count;
+                    node_state = NODE_DETECTED;
+                }
+            }
+            break;
+
+        case NODE_DETECTED:
+            if (!yaw_locked)
+            {
+                if (turn_dir == TURN_LEFT)
+                {
+                    std_yaw -= 90.0f;
+                    yaw_target = std_yaw;
+                }
+                else if (turn_dir == TURN_RIGHT)
+                {
+                    std_yaw += 90.0f;
+                    yaw_target = std_yaw;
+                }
+                else if (turn_dir == GO_STRAIGHT)
+                {
+                    yaw_target = std_yaw;
+                }
+                yaw_before_turn = yaw_total;
+                yaw_locked = 1;
+                node_state = NODE_TURNING;
+            }
+            break;
+
+        case NODE_TURNING:
+            find_guaidian(ROW - 5, 30);
+
+            if (turn_dir == GO_STRAIGHT)
+            {
+                // --- 鐩磋澶勭悊锛堟绉掕鏃�+璺緞鎭㈠锛�---
+
+                if (!tick_locked)
+                {
+                    enter_tick = system_getval_ms();
+                    tick_locked = 1;
+                }
+
+                uint32 elapsed = system_getval_ms() - enter_tick;
+
+                // 瓒呰繃20ms涓旇矾寰勬暟鎭㈠ < 3 鈫� 閫�鍑�
+                if (elapsed > 10 && find_rect_path(bin_image) < 3)
+                {
+                    yaw_after_turn = yaw_total;
+                    float delta_yaw = yaw_after_turn - yaw_before_turn;
+                    if (delta_yaw < -30.0f)
+                        actual_turn_dir = TURN_LEFT;
+                    else if (delta_yaw > 30.0f)
+                        actual_turn_dir = TURN_RIGHT;
+                    else
+                        actual_turn_dir = GO_STRAIGHT;
+
+                    if (actual_turn_dir == turn_dir)
+                        turn_verify_flag = 1;
+                    else
+                        turn_verify_flag = 2;
+
+                    tick_locked = 0;
+                    node_reset_state(&yaw_locked, &cur_paths);
+                }
+            }
+            else if (turn_dir == TURN_LEFT)
+            {
+                // --- 宸﹁浆澶勭悊 ---
+                bias_left(bin_image);
+
+                if (yaw_total <= yaw_target + 20.0f)
+                {
+                    yaw_after_turn = yaw_total;
+                    float delta_yaw = yaw_after_turn - yaw_before_turn;
+                    // 鍒ゆ柇瀹為檯鏂瑰悜锛歞elta_yaw < 0 涓哄乏杞紝> 0 涓哄彸杞�
+                    if (delta_yaw < -30.0f)
+                        actual_turn_dir = TURN_LEFT;
+                    else if (delta_yaw > 30.0f)
+                        actual_turn_dir = TURN_RIGHT;
+                    else
+                        actual_turn_dir = GO_STRAIGHT;
+
+                    // 鏍￠獙
+                    if (actual_turn_dir == turn_dir)
+                        turn_verify_flag = 1;  // 鍖归厤
+                    else
+                        turn_verify_flag = 2;  // 涓嶅尮閰�
+
+                    node_reset_state(&yaw_locked, &cur_paths);
+                }
+            }
+            else if (turn_dir == TURN_RIGHT)
+            {
+                // --- 鍙宠浆澶勭悊 ---
+                bias_right(bin_image);
+
+                if (yaw_total >= yaw_target - 20.0f)
+                {
+                    yaw_after_turn = yaw_total;
+                    float delta_yaw = yaw_after_turn - yaw_before_turn;
+                    if (delta_yaw < -30.0f)
+                        actual_turn_dir = TURN_LEFT;
+                    else if (delta_yaw > 30.0f)
+                        actual_turn_dir = TURN_RIGHT;
+                    else
+                        actual_turn_dir = GO_STRAIGHT;
+
+                    if (actual_turn_dir == turn_dir)
+                        turn_verify_flag = 1;
+                    else
+                        turn_verify_flag = 2;
+
+                    node_reset_state(&yaw_locked, &cur_paths);
+                }
+            }
+            break;
+
+        default:
+            break;
+    }
+}
+
+uint8 node_reset = 0;
+
+/**
+ * @brief 鐘舵�佸垵濮嬪寲
+ */
+void reset_all(void)
+{
+    memset(bin_image,  0, sizeof(bin_image));
+
+    memset(l_border, 0, sizeof(l_border));
+    memset(r_border, 0, sizeof(r_border));
+    memset(mid_line, 0, sizeof(mid_line));
+
+    l_guaidian = 0;
+    r_guaidian = 0;
+
+    node_state = NODE_NONE;
+    turn_dir = TURN_NONE;
+    memset(&path_info, 0, sizeof(PathInfo));
+    node_count = 0;
+
+    node_reset = 1;
+
+    image_err = 0.0f;
+
+    yaw_total = 0.0f;
+    std_yaw = 0.0f;
+
+    total_dist = 0.0f;
+
+    steer_pwm_out   = 0.0f;
+    l_speed_output  = 0.0f;
+    r_speed_output  = 0.0f;
+
+    yaw_before_turn = 0.0f;
+    yaw_after_turn = 0.0f;
+    actual_turn_dir = TURN_NONE;
+    turn_verify_flag = 0;
+    plan_warn_flag = 0;
+}
+
+float image_err = 0.0f;
+
+/**
+ * @brief 鍥惧儚璇樊璁＄畻
+ */
+void calc_image_error(void)
+{
+    float err = 0;
+    float err_sum = 0;
+    static float err_last;
+
+    for (uint8 i = 10; i < ROW; i++)
+    {
+        err_sum += (mid_line[i] - 93);
+    }
+
+    err = err_sum / ROW;
+
+//    err = err * 0.9f + err_last * 0.1f;
+//    err_last = err;
+
+    if (err >= 55)
+        err = 55;
+    if (err <= -55)
+        err = -55;
+
+    image_err = err;
+}
+
+/**
+ * @brief 连续帧全黑检测，白像素 < 0.5% 且连续 30 帧才触发，跑白线赛道不会误停
+ * @return 1=连续全黑/跑出赛道, 0=正常
+ */
+uint8 is_all_black(void)
+{
+    static uint8 black_frame_cnt = 0;
+    uint32 white_count = 0;
+
+    for (uint16 row = 0; row < ROW; row++)
+    {
+        for (uint16 col = 0; col < COL; col++)
+        {
+            if (bin_image[row][col] == WHITE)
+            {
+                white_count++;
+            }
+        }
+    }
+
+    // 白像素低于 0.5% → 本帧全黑（正常赛道白线远不止112个像素）
+    if (white_count < (uint32)(ROW * COL * OUT_OF_TRACK_WHITE_RATIO))
+    {
+        black_frame_cnt++;
+    }
+    else
+    {
+        black_frame_cnt = 0;  // 出现白线就清零
+    }
+
+    // 连续全黑帧数超过阈值 → 跑出赛道，停车
+    if (black_frame_cnt >= OUT_OF_TRACK_FRAME_CNT)
+    {
+        black_frame_cnt = 0;
+        return 1;
+    }
+    return 0;
+}
+
+void image_proc(void)
+{
+    if (mt9v03x_finish_flag_1)
+    {
+        mt9v03x_finish_flag_1 = 0;
+        image_binarize(mt9v03x_image_1);
+        search_line();
+        node_proc(bin_image);
+        calc_image_error();
+        draw_rect();
+    }
+}

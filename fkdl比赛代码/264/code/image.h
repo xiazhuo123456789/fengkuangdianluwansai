@@ -1,0 +1,108 @@
+/*
+ * image.h
+ *
+ *  Created on: 2026年6月1日
+ *      Author: xz123
+ */
+
+#ifndef CODE_IMAGE_H_
+#define CODE_IMAGE_H_
+
+#include "zf_common_headfile.h"
+
+#define COL                 188
+#define ROW                 120
+
+#define BLACK               0
+#define WHITE               255
+
+#define CROP_X              0
+#define CROP_Y              0
+
+#define THRESH_MIN          100
+#define THRESH_MAX          200
+
+#define BLOCK_FAR_START     0
+#define BLOCK_FAR_END       40
+#define BLOCK_MID_START     40
+#define BLOCK_MID_END       80
+#define BLOCK_NEAR_START    80
+#define BLOCK_NEAR_END      120
+
+#define RECT_LEFT           10
+#define RECT_RIGHT          175
+#define RECT_TOP            8
+#define RECT_BOTTOM         110
+
+// 跑出赛道检测
+#define OUT_OF_TRACK_WHITE_RATIO 0.005f  // 白像素占比阈值（0.5%，~112个像素）
+#define OUT_OF_TRACK_FRAME_CNT   30       // 连续全黑帧数（约0.3s@100fps）
+
+// 节点状态
+typedef enum
+{
+    NODE_NONE = 0,      // 无节点
+    NODE_DETECTED,      // 检测到节点
+    NODE_TURNING        // 正在转向
+} NodeState;
+
+// 转向方向
+typedef enum
+{
+    TURN_NONE = 0,      // 无操作
+    TURN_LEFT,          // 左转
+    TURN_RIGHT,         // 右转
+    GO_STRAIGHT         // 直行
+} TurnDir;
+
+// 路径信息
+typedef struct
+{
+    uint8 count;        // 路径数量
+    uint8 top_exist;    // 上方有路
+    uint8 bottom_exist; // 下方有路
+    uint8 left_exist;   // 左侧有路
+    uint8 right_exist;  // 右侧有路
+} PathInfo;
+
+extern NodeState node_state;
+extern TurnDir turn_dir;
+extern PathInfo path_info;
+
+extern float image_err;
+extern uint8 bin_image[ROW][COL];
+extern uint8 orig_image[ROW][COL];
+extern uint8 max_gray;
+extern uint8 l_border[ROW];
+extern uint8 r_border[ROW];
+extern uint8 mid_line[ROW];
+extern const TurnDir *path;   // 改为指针，运行时可变
+extern uint8 path_len;
+extern uint8 node_count;
+extern uint8 node_reset;
+extern float std_yaw;
+extern float yaw_before_turn;
+extern float yaw_after_turn;
+extern TurnDir actual_turn_dir;
+extern uint8 turn_verify_flag;
+extern uint8 plan_warn_flag;
+
+void path_update(void);     // 运行时切换路径表
+void image_crop(uint8 (*mt9v03x_image)[MT9V03X_1_W]);
+uint8 block_otsu(uint8 *image, uint16 col, uint16 row_start, uint16 row_end);
+void image_binarize(uint8 (*src_image)[COL]);
+void search_line(void);
+void change_line(uint8 x1, uint8 y1, uint8 x2, uint8 y2);
+void find_guaidian(uint8 start, uint8 end);
+uint8 find_line_bottom(uint8 col, uint8 (*bin_image)[COL]);
+uint8 find_rect_path(uint8 (*bin_image)[COL]);
+TurnDir corner_turn(void);
+TurnDir plan_turn(void);
+void node_proc(uint8 (*bin_image)[COL]);
+void reset_all(void);
+void calc_image_error(void);
+uint8 is_all_black(void);
+void draw_rect(void);
+void image_proc(void);
+
+#endif /* CODE_IMAGE_H_ */

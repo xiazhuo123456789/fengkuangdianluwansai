@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(xargs grep:*)",
+      "Bash(find /f/ads-workspace/TC264 -type f -name *.txt -o -name README* -o -name *.md)",
+      "Bash(grep -r \"int main\\\\|void main\" F:ads-workspaceTC264 --include=*.c)",
+      "Bash(grep -r \"void.*ccu\\\\|void.*pit\" F:ads-workspaceTC264 --include=*.c -i)",
+      "Bash(grep -r \"pit_ms_init\\\\|PIT.*interrupt\\\\|PIT.*HANDLER\\\\|CCU60\\\\|CCU61\" F:ads-workspaceTC264 --include=*.h -B2 -A2)",
+      "Bash(find F:ads-workspaceTC264 -name zf_common_headfile.h -o -name *pit* -name *.h)",
+      "Bash(find F:ads-workspaceTC264 -name zf_driver_pit.c -o -name *pit*.c)",
+      "Bash(find F:ads-workspaceTC264 -name isr_config.h -o -name *isr* -name *.h)"
+    ]
+  }
+}

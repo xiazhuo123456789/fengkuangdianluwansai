@@ -1,0 +1,168 @@
+/*
+ * control.c
+ *
+ *  Created on: 2026年6月1日
+ *      Author: xz123
+ */
+
+#include "control.h"
+
+Steer_Pid steer_pid;
+
+void pid_param_init(void)
+{
+    steer_pid.kp  = 55;
+    steer_pid.gkd = 35;
+    steer_pid.kp2 = 0.005f;
+    steer_pid.kd  = 0.2f;
+}
+
+int base_speed = 1200;
+float l_speed_output = 0;
+float r_speed_output = 0;
+float steer_pwm_out = 0;
+volatile uint8 fuya_flag;
+
+static uint8 time_2ms;
+static uint8 time_5ms;
+
+void control_proc(void)
+{
+    int actual_speed;
+
+    if (run_flag == 1)
+    {
+        // ===== 启动加速：克服死区电压 =====
+#if BOOST_ENABLE
+        {
+            static uint32 boost_tick = 0;   // 启动时刻(ms)
+            static uint8  boost_done = 0;   // 加速是否结束
+
+            if (!boost_done)
+            {
+                if (boost_tick == 0)
+                {
+                    boost_tick = system_getval_ms(); // 记录启动时刻
+                }
+
+                uint32 elapsed = system_getval_ms() - boost_tick;
+                if (elapsed < BOOST_TIME_MS)
+                {
+                    actual_speed = BOOST_SPEED;       // 加速期：高速度
+                }
+                else
+                {
+                    actual_speed = base_speed;        // 加速结束：降回正常速度
+                    boost_done = 1;
+                }
+            }
+            else
+            {
+                actual_speed = base_speed;
+            }
+        }
+#else
+        actual_speed = base_speed;
+#endif
+
+        if(++time_2ms >= 2)
+        {
+            time_2ms = 0;
+
+            steer_pwm_out = steer_pid_calc(image_err, imu660rb_gyro_z, &steer_pid);
+            steer_pwm_out = limit_float(steer_pwm_out, steer_pwm_duty_max, steer_pwm_duty_min);
+        }
+
+        if(++time_5ms >= 5)
+        {
+            time_5ms = 0;
+
+            l_speed_output = actual_speed + steer_pwm_out;
+            r_speed_output = actual_speed - steer_pwm_out;
+
+            motor_proc(l_speed_output, r_speed_output);
+        }
+    }
+    else if(run_flag == 0)
+    {
+        motor_proc(0, 0);
+    }
+}
+
+void fuya_proc(void)
+{
+    if(fuya_flag)
+    {
+        set_fuya_pwm(FUYA_PWM_DUTY);
+    }
+    else
+    {
+        set_fuya_pwm(0);
+    }
+}
+
+void run_time_proc(void)
+{
+    static uint16 cnt_10ms = 0;
+    static uint16 timer_1s = 0;
+
+    if (start_flag)
+    {
+        cnt_10ms++;
+
+        if (cnt_10ms >= 100)
+        {
+            cnt_10ms = 0;
+            timer_1s++;
+
+            if(timer_1s == 1)
+            {
+                fuya_flag = 1;
+            }
+            else if(timer_1s == 2)
+            {
+                run_flag = 1;
+            }
+            else if(timer_1s == RUN_TIME)
+            {
+                run_flag = 0;
+            }
+            else if(timer_1s == (RUN_TIME + 1))
+            {
+                fuya_flag = 0;
+                start_flag = 0;
+
+                timer_1s = 0;
+                cnt_10ms = 0;
+            }
+        }
+    }
+
+    // 路径表跑完后，第2个路口停车
+    if (node_count >= path_len + PARK_AFTER_PATH_NODES)
+    {
+        run_flag = 0;
+    }
+
+    // 图像持续全黑 → 跑出赛道 → 停车
+    if (is_all_black())
+    {
+        run_flag = 0;
+    }
+}
+
+float steer_pid_calc(float image_error, float gyro, Steer_Pid *pid)
+{
+    float steer_value;
+    float error_diff = image_error - pid->last_error;  // 误差微分
+
+    // 外环：比例 + 非线性增益 + 误差微分 - 陀螺仪微分
+    steer_value = (image_error * pid->kp)
+                + pid->kp2 * image_error * fabsf(image_error)  // 非线性项
+                + pid->kd * error_diff                          // 误差微分项
+                - (gyro * pid->gkd) / 100;                      // 陀螺仪抑制
+
+    pid->last_error = image_error;
+
+    return steer_value;
+}
